@@ -1,0 +1,4 @@
+Opening test.cap
+Read 15 packets.
+
+No networks found.

@@ -4,4 +4,7 @@ logs/
 tmp/
 captures/
 report.json
+sessions/
+*.egg-info/
+.pytest_cache/
 

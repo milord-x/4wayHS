@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .wifi.channels import channel_to_frequency
+
 
 @dataclass
 class AccessPoint:
@@ -89,7 +91,7 @@ def _parse_csv(text: str) -> list[AccessPoint]:
                 ssid=ssid,
                 bssid=bssid,
                 channel=channel,
-                frequency=2407 + channel * 5,
+                frequency=channel_to_frequency(channel),
                 security=rec.get("Privacy", "").strip() or "OPEN",
                 signal=signal,
                 first_seen=rec.get("First time seen", ""),

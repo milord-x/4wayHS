@@ -1,0 +1,7 @@
+BSSID, First time seen, Last time seen, channel, Speed, Privacy, Cipher, Authentication, Power, # beacons, # IV, LAN IP, ID-length, ESSID, Key
+20:98:D8:11:DE:EE, 2026-01-01 00:00:00, 2026-01-01 00:05:12, 3, 54, WPA2, CCMP, PSK, -40, 120, 0, 0.0.0.0, 4, Yana,
+A4:2B:8C:99:11:02, 2026-01-01 00:00:03, 2026-01-01 00:05:10, 6, 54, WPA2, CCMP, PSK, -62, 87, 0, 0.0.0.0, 6, Office,
+00:11:22:33:44:55, 2026-01-01 00:00:05, 2026-01-01 00:05:09, 11, 54, OPN, , , -78, 40, 0, 0.0.0.0, 5, Guest,
+
+Station MAC, First time seen, Last time seen, Power, # packets, BSSID, Probed ESSIDs
+BC:14:EF:01:02:03, 2026-01-01 00:00:10, 2026-01-01 00:05:00, -50, 30, 20:98:D8:11:DE:EE,

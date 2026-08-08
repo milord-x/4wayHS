@@ -16,6 +16,30 @@ class TargetState(str, Enum):
     COMPLETED = "COMPLETED"
 
 
+class InvalidTransition(Exception):
+    pass
+
+
+_TRANSITIONS: dict[TargetState, set[TargetState]] = {
+    TargetState.DISCOVERED: {TargetState.QUEUED},
+    TargetState.QUEUED: {TargetState.CAPTURING},
+    TargetState.CAPTURING: {
+        TargetState.HANDSHAKE_FOUND,
+        TargetState.NO_HANDSHAKE,
+        TargetState.CAPTURING,
+    },
+    TargetState.HANDSHAKE_FOUND: {
+        TargetState.HANDSHAKE_FOUND,
+        TargetState.VALIDATED,
+        TargetState.COMPLETED,
+        TargetState.NO_HANDSHAKE,
+    },
+    TargetState.NO_HANDSHAKE: {TargetState.CAPTURING, TargetState.NO_HANDSHAKE},
+    TargetState.VALIDATED: {TargetState.COMPLETED},
+    TargetState.COMPLETED: set(),
+}
+
+
 @dataclass
 class Target:
     ap: AccessPoint
@@ -29,6 +53,11 @@ class Target:
     @property
     def done(self) -> bool:
         return self.handshake_count >= self.required_handshakes
+
+    def transition(self, new_state: TargetState) -> None:
+        if new_state not in _TRANSITIONS[self.state]:
+            raise InvalidTransition(f"{self.ap.bssid}: {self.state.value} -> {new_state.value} not allowed")
+        self.state = new_state
 
 
 def select_targets(

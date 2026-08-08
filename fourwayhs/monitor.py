@@ -15,9 +15,12 @@ def stop_conflicting_services() -> None:
     subprocess.run(["airmon-ng", "check", "kill"], capture_output=True, text=True)
 
 
-def restore_services() -> None:
+def restore_services(was_running: list[str]) -> None:
+    """Restore each conflicting service to the state it had before the
+    toolkit ran, instead of unconditionally starting all of them."""
     for svc in CONFLICTING_SERVICES:
-        subprocess.run(["systemctl", "start", svc], capture_output=True, text=True)
+        action = "start" if svc in was_running else "stop"
+        subprocess.run(["systemctl", action, svc], capture_output=True, text=True)
 
 
 def _interface_exists(interface: str) -> bool:

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import capture, discovery, monitor, preflight, report
+from .backend import get_backend
 from .capture import AbortRequested
 from .targets import Target, TargetState, select_targets
 
@@ -23,22 +24,35 @@ def run(
     required_handshakes: int = 1,
     work_dir: Path = Path("."),
     deauth: bool = False,
+    interface: str | None = None,
+    backend_name: str = "aircrack",
+    session_id: str = "manual",
+    session_dir: Path | None = None,
+    log_file: str | None = None,
 ) -> None:
     tmp_dir = work_dir / "tmp"
-    captures_dir = work_dir / "captures"
+    session_dir = session_dir or (work_dir / "sessions" / session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    captures_dir = session_dir / "captures"
+    backend = get_backend(backend_name)
 
     report.print_banner()
 
-    pf = preflight.run_preflight()
+    if not interface:
+        interfaces = preflight.list_wifi_interfaces()
+        if len(interfaces) > 1:
+            interface = prompt_interface_selection(interfaces)
+
+    pf = preflight.run_preflight(interface, backend_name)
     preflight.print_preflight(pf)
     if not pf.ok:
         raise PreflightFailed("Preflight checks failed.")
 
-    mon_if = monitor.enable_monitor_mode(pf.interface)
-    print(f"\n{pf.interface} -> monitor mode -> {mon_if}\n")
+    mon_if = backend.enable_monitor_mode(pf.interface)
+    print(f"\n{pf.interface} -> monitor mode ({backend.name}) -> {mon_if}\n")
 
     try:
-        aps = discovery.scan(mon_if, scan_duration, tmp_dir)
+        aps = backend.scan(mon_if, scan_duration, tmp_dir)
         discovery.print_networks(aps)
         if not aps:
             print("\nNo networks found. Exiting.")
@@ -57,7 +71,10 @@ def run(
 
         for channel, group in channels.items():
             try:
-                run_channel(mon_if, channel, group, tmp_dir, captures_dir, capture_timeout, len(aps), targets, deauth)
+                run_channel(
+                    backend, mon_if, channel, group, tmp_dir, captures_dir,
+                    capture_timeout, len(aps), targets, deauth,
+                )
             except AbortRequested:
                 print("\n\n[QUIT] Stopping toolkit safely, restoring system state...")
                 for t in group:
@@ -65,12 +82,24 @@ def run(
                 break
 
         report.print_final_report(len(aps), targets)
-        report.write_report_json(work_dir / "report.json", targets)
+        report.write_report_json(session_dir / "report.json", targets, session_id, log_file)
 
     finally:
+        report.stop_dashboard()
         cleanup(tmp_dir)
-        monitor.disable_monitor_mode(mon_if, pf.interface)
-        monitor.restore_services()
+        backend.disable_monitor_mode(mon_if, pf.interface)
+        monitor.restore_services(pf.running_services)
+
+
+def prompt_interface_selection(interfaces: list[str]) -> str:
+    print("\nAvailable Wi-Fi adapters:\n")
+    for i, iface in enumerate(interfaces, 1):
+        driver = preflight.get_driver(iface) or "unknown driver"
+        print(f"[{i}] {iface}\n    {driver}\n")
+    while True:
+        raw = input("Select adapter: ").strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(interfaces):
+            return interfaces[int(raw) - 1]
 
 
 def prompt_target_selection(aps: list) -> list[int]:
@@ -108,6 +137,7 @@ def discovery_targets_view(aps: list) -> None:
 
 
 def run_channel(
+    backend,
     mon_if: str,
     channel: int,
     group: list[Target],
@@ -120,24 +150,25 @@ def run_channel(
 ) -> None:
     for t in group:
         t.start_time = now()
-        t.state = TargetState.CAPTURING
+        t.transition(TargetState.CAPTURING)
 
     report.render_dashboard(mon_if, networks_found, targets)
 
     def on_tick(ch, elapsed, timeout, found, total):
-        print(report.render_progress_line((ch, elapsed, timeout, found, total)))
+        report.render_dashboard(mon_if, networks_found, targets, (ch, elapsed, timeout, found, total))
 
-    cap_path = capture.capture_channel(
+    cap_path = backend.capture_channel(
         mon_if, channel, group, tmp_dir, capture_timeout, on_tick=on_tick, deauth=deauth
     )
+    report.stop_dashboard()
 
     for t in group:
-        if t.state == TargetState.HANDSHAKE_FOUND and capture.validate(cap_path, t):
+        if t.state == TargetState.HANDSHAKE_FOUND and capture.validate(cap_path, t, backend=backend):
             dest = capture.save_result_copy(cap_path, captures_dir, t)
             t.capture_file = str(dest)
-            t.state = TargetState.COMPLETED if t.done else TargetState.VALIDATED
+            t.transition(TargetState.COMPLETED if t.done else TargetState.VALIDATED)
         else:
-            t.state = TargetState.NO_HANDSHAKE
+            t.transition(TargetState.NO_HANDSHAKE)
         t.end_time = now()
 
     capture.discard(cap_path)

@@ -9,11 +9,15 @@ import sys
 import time
 from pathlib import Path
 
+from .handshake import AircrackDetector, HandshakeDetector, HandshakeResult
 from .targets import Target, TargetState
 
 
 class AbortRequested(Exception):
     pass
+
+
+_detector: HandshakeDetector = AircrackDetector()
 
 
 def safe_name(ssid: str, bssid: str) -> str:
@@ -79,7 +83,7 @@ def capture_channel(
                 dead_checked = True
                 for bssid, t in list(pending.items()):
                     if not _ap_seen(csv_path, bssid):
-                        t.state = TargetState.NO_HANDSHAKE
+                        t.transition(TargetState.NO_HANDSHAKE)
                         del pending[bssid]
 
             if deauth and pending:
@@ -88,9 +92,11 @@ def capture_channel(
 
             if cap_path.exists():
                 for bssid, t in list(pending.items()):
-                    if has_handshake(cap_path, bssid):
-                        t.handshake_count += 1
-                        t.state = TargetState.HANDSHAKE_FOUND
+                    result = _detector.detect(cap_path, bssid)
+                    if result.count > t.handshake_count:
+                        t.handshake_count = result.count
+                        t.transition(TargetState.HANDSHAKE_FOUND)
+                    if t.done:
                         found_count += 1
                         del pending[bssid]
 
@@ -108,7 +114,7 @@ def capture_channel(
                 proc.kill()
 
     for t in pending.values():
-        t.state = TargetState.NO_HANDSHAKE
+        t.transition(TargetState.NO_HANDSHAKE)
 
     return cap_path
 
@@ -130,36 +136,19 @@ def _ap_seen(csv_path: Path, bssid: str) -> bool:
 
 
 def has_handshake(cap_path: Path, bssid: str) -> bool:
-    if not cap_path.exists():
-        return False
-    result = subprocess.run(
-        ["aircrack-ng", "-a2", "-b", bssid, str(cap_path)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    return "1 handshake" in result.stdout or re.search(r"WPA \([1-9]\d* handshake", result.stdout) is not None
+    return _detector.detect(cap_path, bssid).detected
 
 
-def validate(cap_path: Path, target: Target) -> bool:
-    if not cap_path.exists() or cap_path.stat().st_size == 0:
-        return False
-    result = subprocess.run(
-        ["aircrack-ng", "-a2", "-b", target.ap.bssid, str(cap_path)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0 and "handshake" not in result.stdout.lower():
-        return False
-    ok = has_handshake(cap_path, target.ap.bssid)
-    if ok:
+def validate(cap_path: Path, target: Target, backend=None) -> bool:
+    detect = backend.detect_handshake if backend is not None else _detector.detect
+    result = detect(cap_path, target.ap.bssid)
+    if result.detected:
         print(
             f"\n[HANDSHAKE FOUND]\n\nSSID:       {target.ap.ssid}\n"
             f"BSSID:      {target.ap.bssid}\nChannel:    {target.ap.channel}\n"
             f"EAPOL:      detected\nValidation: PASS\n\nSaving capture..."
         )
-    return ok
+    return result.detected
 
 
 def save_result_copy(cap_path: Path, captures_dir: Path, target: Target) -> Path:

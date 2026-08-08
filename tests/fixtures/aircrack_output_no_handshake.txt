@@ -1,0 +1,8 @@
+Opening test.cap
+Read 120 packets.
+
+   #  BSSID              ESSID                     Encryption
+
+   1  20:98:D8:11:DE:EE  Yana                      WPA (0 handshake)
+
+Choosing first network as target.

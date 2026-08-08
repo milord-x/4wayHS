@@ -1,0 +1,18 @@
+[project]
+name = "4wayHS"
+version = "0.1.0-alpha"
+description = "WPA/WPA2 4-way handshake capture toolkit"
+requires-python = ">=3.12"
+dependencies = [
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+native = ["scapy>=2.5"]
+dev = ["pytest>=8", "scapy>=2.5"]
+
+[project.scripts]
+4wayHS = "fourwayhs.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["fourwayhs*"]

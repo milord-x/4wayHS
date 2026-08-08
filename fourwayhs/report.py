@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import sys
-from dataclasses import asdict
 from pathlib import Path
+
+from rich.console import Console, Group
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from .targets import Target, TargetState
 
@@ -38,28 +42,18 @@ def _html_logo_to_ansi(html: str) -> str:
     return "".join(out).rstrip("\n")
 
 STATE_MARK = {
-    "COMPLETED": "✓",
-    "VALIDATED": "✓",
-    "HANDSHAKE_FOUND": "✓",
-    "CAPTURING": "◉",
-    "NO_HANDSHAKE": "✗",
-    "QUEUED": "○",
-    "DISCOVERED": "○",
+    "COMPLETED": "[green]✓[/]",
+    "VALIDATED": "[green]✓[/]",
+    "HANDSHAKE_FOUND": "[green]✓[/]",
+    "CAPTURING": "[yellow]◉[/]",
+    "NO_HANDSHAKE": "[red]✗[/]",
+    "QUEUED": "[dim]○[/]",
+    "DISCOVERED": "[dim]○[/]",
 }
 
 _USE_COLOR = sys.stdout.isatty()
-DARK_RED = "\x1b[38;5;88m"
-RESET = "\x1b[0m"
-
-
-def _redborder(line: str) -> str:
-    if not _USE_COLOR:
-        return line
-    return line.replace("║", f"{DARK_RED}║{RESET}").replace("╔", f"{DARK_RED}╔").replace(
-        "╗", f"╗{RESET}"
-    ).replace("╠", f"{DARK_RED}╠").replace("╣", f"╣{RESET}").replace(
-        "╚", f"{DARK_RED}╚"
-    ).replace("╝", f"╝{RESET}")
+_console = Console()
+_live: Live | None = None
 
 
 def print_banner() -> None:
@@ -76,32 +70,44 @@ def print_banner() -> None:
     sys.stdout.flush()
 
 
-def _width() -> int:
-    return max(60, min(shutil.get_terminal_size((60, 20)).columns, 78))
+def _build_dashboard(
+    monitor_interface: str,
+    networks_found: int,
+    targets: list[Target],
+    channel_progress: tuple | None = None,
+) -> Panel:
+    completed = sum(1 for t in targets if t.state == TargetState.COMPLETED)
+    pending = len(targets) - completed
 
+    summary = Text()
+    summary.append(f"Adapter: {monitor_interface}   ")
+    summary.append("Mode: MONITOR\n")
+    summary.append(
+        f"Networks found: {networks_found}   Targets: {len(targets)}   "
+        f"Completed: {completed}   Pending: {pending}"
+    )
 
-def _bar(current: int, total: int, width: int = 20) -> str:
-    if total <= 0:
-        filled = 0
-    else:
-        filled = min(width, int(width * current / total))
-    return "[" + "#" * filled + "-" * (width - filled) + "]"
+    table = Table(show_header=True, header_style="bold", expand=True, box=None)
+    table.add_column("", width=2)
+    table.add_column("SSID", overflow="ellipsis", max_width=20)
+    table.add_column("Handshakes", justify="center")
+    table.add_column("State")
+    for t in targets:
+        mark = STATE_MARK.get(t.state.value, "[dim]○[/]")
+        table.add_row(mark, t.ap.ssid, f"{t.handshake_count}/{t.required_handshakes}", t.state.value)
 
+    parts = [summary, table]
 
-def _row(content: str, w: int) -> str:
-    return "║" + content[: w - 2].ljust(w - 2) + "║"
+    if channel_progress is not None:
+        channel, elapsed, timeout, found, total = channel_progress
+        width = 30
+        filled = min(width, int(width * elapsed / timeout)) if timeout > 0 else 0
+        bar = "#" * filled + "-" * (width - filled)
+        parts.append(Text(f"CH{channel} [{bar}] {elapsed}s/{timeout}s  handshakes {found}/{total}"))
 
+    parts.append(Text("[q + Enter] quit safely and restore system", style="dim"))
 
-def _truncate(text: str, width: int) -> str:
-    if len(text) <= width:
-        return text.ljust(width)
-    return text[: width - 1] + "…"
-
-
-def render_progress_line(channel_progress: tuple) -> str:
-    channel, elapsed, timeout, found, total = channel_progress
-    bar = _bar(elapsed, timeout)
-    return f"  CH{channel} {bar} {elapsed}s/{timeout}s  handshakes {found}/{total}"
+    return Panel(Group(*parts), title="WIFI HANDSHAKE CAPTURE TOOL", border_style="dark_red")
 
 
 def render_dashboard(
@@ -110,44 +116,20 @@ def render_dashboard(
     targets: list[Target],
     channel_progress: tuple | None = None,
 ) -> None:
-    w = _width()
-    completed = sum(1 for t in targets if t.state == TargetState.COMPLETED)
-    pending = len(targets) - completed
+    global _live
+    panel = _build_dashboard(monitor_interface, networks_found, targets, channel_progress)
+    if _live is None:
+        _live = Live(panel, console=_console, refresh_per_second=4)
+        _live.start()
+    else:
+        _live.update(panel)
 
-    lines = []
-    lines.append("╔" + "═" * (w - 2) + "╗")
-    lines.append("║" + "WIFI HANDSHAKE CAPTURE TOOL".center(w - 2) + "║")
-    lines.append("╠" + "═" * (w - 2) + "╣")
-    lines.append(_row(f" Adapter: {monitor_interface}", w))
-    lines.append(_row(" Mode: MONITOR", w))
-    lines.append(_row(f" Networks found: {networks_found}", w))
-    lines.append(_row(f" Targets: {len(targets)}", w))
-    lines.append(_row(f" Completed: {completed}", w))
-    lines.append(_row(f" Pending: {pending}", w))
-    lines.append("╠" + "═" * (w - 2) + "╣")
-    lines.append(_row(" TARGETS", w))
-    lines.append(_row("", w))
-    for t in targets:
-        mark = STATE_MARK.get(t.state.value, "○")
-        ssid = _truncate(t.ap.ssid, 16)
-        hs = f"{t.handshake_count}/{t.required_handshakes}".ljust(5)
-        row = f" {mark} {ssid} {hs} {t.state.value:<16}"
-        lines.append(_row(row, w))
-    lines.append(_row("", w))
 
-    if channel_progress is not None:
-        channel, elapsed, timeout, found, total = channel_progress
-        lines.append("╠" + "═" * (w - 2) + "╣")
-        bar = _bar(elapsed, timeout)
-        row = f" CH{channel} {bar} {elapsed}s/{timeout}s  handshakes {found}/{total}"
-        lines.append(_row(row, w))
-
-    lines.append("╠" + "═" * (w - 2) + "╣")
-    lines.append(_row(" [q + Enter] quit safely and restore system", w))
-    lines.append("╚" + "═" * (w - 2) + "╝")
-
-    sys.stdout.write("\n".join(_redborder(l) for l in lines) + "\n")
-    sys.stdout.flush()
+def stop_dashboard() -> None:
+    global _live
+    if _live is not None:
+        _live.stop()
+        _live = None
 
 
 def print_final_report(networks_found: int, targets: list[Target]) -> None:
@@ -167,10 +149,12 @@ def print_final_report(networks_found: int, targets: list[Target]) -> None:
     print("\nOutput:\n    captures/")
 
 
-def write_report_json(path: Path, targets: list[Target]) -> None:
-    data = []
+def write_report_json(path: Path, targets: list[Target], session_id: str, log_file: str | None = None) -> None:
+    from . import __version__
+
+    targets_data = []
     for t in targets:
-        data.append(
+        targets_data.append(
             {
                 "ssid": t.ap.ssid,
                 "bssid": t.ap.bssid,
@@ -183,4 +167,10 @@ def write_report_json(path: Path, targets: list[Target]) -> None:
                 "end_time": t.end_time,
             }
         )
+    data = {
+        "session_id": session_id,
+        "tool_version": __version__,
+        "log_file": log_file,
+        "targets": targets_data,
+    }
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")

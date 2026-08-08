@@ -6,7 +6,10 @@ import subprocess
 from dataclasses import dataclass, field
 
 
-REQUIRED_TOOLS = ["airmon-ng", "airodump-ng", "aircrack-ng", "iw", "ip"]
+REQUIRED_TOOLS_BY_BACKEND = {
+    "aircrack": ["airmon-ng", "airodump-ng", "aircrack-ng", "iw", "ip"],
+    "native": ["iw", "ip"],
+}
 CONFLICTING_SERVICES = ["NetworkManager", "wpa_supplicant", "iwd"]
 
 
@@ -29,13 +32,14 @@ class PreflightResult:
         )
 
 
-def find_wifi_interface() -> str | None:
+def list_wifi_interfaces() -> list[str]:
     out = subprocess.run(["iw", "dev"], capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        line = line.strip()
-        if line.startswith("Interface"):
-            return line.split()[1]
-    return None
+    return [line.strip().split()[1] for line in out.splitlines() if line.strip().startswith("Interface")]
+
+
+def find_wifi_interface() -> str | None:
+    interfaces = list_wifi_interfaces()
+    return interfaces[0] if interfaces else None
 
 
 def get_driver(interface: str) -> str | None:
@@ -46,13 +50,28 @@ def get_driver(interface: str) -> str | None:
         return None
 
 
+def _phy_for_interface(interface: str) -> str | None:
+    link = f"/sys/class/net/{interface}/phy80211"
+    try:
+        return os.path.basename(os.readlink(link))
+    except OSError:
+        return None
+
+
 def supports_monitor_mode(interface: str) -> bool:
-    out = subprocess.run(["iw", "phy"], capture_output=True, text=True).stdout
-    return "monitor" in out.lower()
+    phy = _phy_for_interface(interface)
+    if not phy:
+        return False
+    out = subprocess.run(["iw", "phy", phy, "info"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if line.strip() == "* monitor":
+            return True
+    return False
 
 
-def check_tools() -> list[str]:
-    return [t for t in REQUIRED_TOOLS if shutil.which(t) is None]
+def check_tools(backend_name: str = "aircrack") -> list[str]:
+    required = REQUIRED_TOOLS_BY_BACKEND.get(backend_name, REQUIRED_TOOLS_BY_BACKEND["aircrack"])
+    return [t for t in required if shutil.which(t) is None]
 
 
 def check_services() -> list[str]:
@@ -66,12 +85,12 @@ def check_services() -> list[str]:
     return running
 
 
-def run_preflight() -> PreflightResult:
-    interface = find_wifi_interface()
+def run_preflight(interface: str | None = None, backend_name: str = "aircrack") -> PreflightResult:
+    interface = interface or find_wifi_interface()
     driver = get_driver(interface) if interface else None
     monitor_capable = supports_monitor_mode(interface) if interface else False
     has_root = os.geteuid() == 0
-    missing_tools = check_tools()
+    missing_tools = check_tools(backend_name)
     running_services = check_services()
 
     return PreflightResult(
